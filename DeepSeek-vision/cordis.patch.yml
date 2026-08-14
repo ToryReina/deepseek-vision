@@ -1,0 +1,7 @@
+# @torycode/deepseek-vision bundle layer — applied when a profile lists this bundle
+# (package.json declares `dsh.bundle.patch` pointing at this file).
+#
+# `name` is the PACKAGE NAME resolved through the profile's node_modules.
+- insert:
+    - id: deepseek-vision
+      name: '@torycode/deepseek-vision'
