@@ -136,13 +136,17 @@ pnpm run typecheck    # 仅类型检查
 ## 原理
 
 ```
-用户上传图片 → 插件 patch adapter（准入放行）
-   → 图片转文本路径提示（renderImageBlocks）
-   → 模型调用 deepseek_vision(image_path)
+用户上传图片 → 插件 patch adapter（准入放行：inputModalities 声明 image）
+   → 插件覆盖 adapter.stream：序列化前把 image 块渲染成附件路径文本
+      （deepseek 适配器对 image 块硬性抛 UNSUPPORTED_CONTENT，必须先转成文本）
+   → 模型看到 "[图片已保存到 <路径>]" 提示 → 调用 deepseek_vision(image_path)
    → 插件 readFile 读图片 + 魔数检测 MIME
-   → POST /chat/completions（base64 图片 + prompt）→ 百炼 vision 模型
+   → POST /chat/completions（base64 图片 + prompt）→ vision 模型
    → 返回文字描述 → 模型据此回答用户
    → 附件副本自动删除
 ```
+
+> **升级安全性**：`stream` 覆盖在插件内实现，不修改 DSH 核心包。
+> 任何 `npm install` / `npx dsh` 更新 DSH 本体都不会破坏本插件（核心补丁才需要重打）。
 
 凭证只发送到配置的 `baseUrl`（默认阿里云百炼），不经过其他服务。

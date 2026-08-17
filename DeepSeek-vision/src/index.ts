@@ -150,6 +150,13 @@ export function apply(ctx: Context, config: Record<string, unknown> = {}) {
           inputModalities?: string[]
           [k: string]: unknown
         }>
+        stream: (options: {
+          provider?: string
+          model?: string
+          messages?: unknown[]
+          system?: string
+          [k: string]: unknown
+        }) => AsyncIterable<unknown>
       }
       // 保留原始实现引用（插件卸载时无法恢复，但服务重启即恢复，可接受）
       const origResolveModel = baseAdapter.resolveModel.bind(baseAdapter)
@@ -168,6 +175,37 @@ export function apply(ctx: Context, config: Record<string, unknown> = {}) {
       baseAdapter.listModels = async (p: string) => {
         const models = await origListModels(p)
         return models.map((mm) => ({ ...mm, inputModalities: withImage(mm.inputModalities) }))
+      }
+      // ── 序列化兜底：把 image 块渲染成附件路径文本（关键补丁）──
+      // 背景：deepseek 适配器的 serializeMessages 对含 image 块的消息直接抛
+      //       UNSUPPORTED_CONTENT（"adapter does not support image content"），
+      //       inputModalities 补丁只放行了上传，图片块进入消息后序列化仍会被拒。
+      // 这里覆盖 adapter.stream：在请求发出前把每个消息里的 image 块替换成
+      //       "[图片已保存到 <绝对路径>]" 文本提示，模型看到路径即调用
+      //       deepseek_vision 工具识图，绕过适配器对 image 块的硬性拒绝。
+      // 附件路径规则与 dsh-attachment-local 一致：objects/<sha256前2位>/<完整sha256>。
+      const origStream = baseAdapter.stream.bind(baseAdapter)
+      baseAdapter.stream = async function* (options, ...rest) {
+        const messages = Array.isArray(options.messages) ? options.messages : []
+        const home = process.env.HOME || process.env.USERPROFILE || ''
+        const attachRoot = home ? resolve(home, '.dsh', 'attachments', 'v1') : ''
+        const rendered = messages.map((message) => {
+          const content = (message as { content?: unknown[] }).content
+          if (!Array.isArray(content) || !content.some((block) => (block as { type?: string }).type === 'image')) return message
+          const blocks = content.flatMap((block) => {
+            const b = block as { type?: string; attachment?: { attachmentId?: string; mediaType?: string; name?: string } }
+            if (b.type !== 'image' || !b.attachment) return [block]
+            const sha = String(b.attachment.attachmentId || '').replace(/^sha256:/, '')
+            const path = attachRoot && sha ? `${attachRoot}/objects/${sha.slice(0, 2)}/${sha}` : String(b.attachment.attachmentId || '')
+            const name = b.attachment.name ? `（${b.attachment.name}）` : ''
+            return [{
+              type: 'text',
+              text: `[用户上传了一张图片${name}，已保存到：${path}。请调用 deepseek_vision 工具传入该路径查看图片内容。]`,
+            }]
+          })
+          return { ...(message as Record<string, unknown>), content: blocks }
+        })
+        yield* origStream({ ...options, messages: rendered }, ...rest)
       }
       console.log(`[deepseek-vision] patched "${baseProvider}" adapter to accept image input (no model switch needed)`)
     } else {
